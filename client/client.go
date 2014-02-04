@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"strings"
 	"time"
 
 	"github.com/jroimartin/gocui"
+	"github.com/robertkrimen/otto"
 )
 
 const (
@@ -18,6 +20,7 @@ type Client struct {
 	ctrlcAt    time.Time
 	gui        *gocui.Gui
 	connection io.Writer
+	ot         *otto.Otto
 }
 
 func (self *Client) Close() {
@@ -29,15 +32,49 @@ func (self *Client) handleLine(g *gocui.Gui, v *gocui.View) (err error) {
 	if err != nil {
 		return
 	}
-	line = strings.TrimSpace(line[:len(line)-1])
-	if line[0] == '/' {
+	v.Clear()
+	v.SetCursor(0, 0)
+	if len(line) > 0 {
+		line = strings.TrimSpace(line)
+		line = line[:len(line)-1]
+		if line[0] == '/' {
+			result, e := self.ot.Run(line[1:])
+			if e != nil {
+				self.Outputf("Error executing %#v: %v", line[1:], e)
+				return
+			}
+			self.Outputf("%v", result)
+			return
+		}
+		if self.connection != nil {
+			fmt.Fprintln(self.connection, line)
+		}
+		self.Outputf("Nowhere to send %#v\n", line)
+	}
+	return
+}
+
+func (self *Client) connect(host string) (err error) {
+	addr, err := net.ResolveTCPAddr("tcp", host)
+	if err != nil {
 		return
 	}
-	if self.connection != nil {
-		fmt.Fprintln(self.connection, line)
+	_, err = net.DialTCP("tcp", nil, addr)
+	if err != nil {
+		return
 	}
-	self.Outputf("Nowhere to send %#v\n", line)
 	return
+}
+
+func (self *Client) bindOtto() {
+	self.ot.Set("connect", func(call otto.FunctionCall) (result otto.Value) {
+		if err := self.connect(call.Argument(0).String()); err != nil {
+			result, _ = otto.ToValue(fmt.Errorf("Error connecting to %#v: %v", call.Argument(0).String(), err))
+			return
+		}
+		result, _ = otto.ToValue(fmt.Sprintf("Connected to %#v", call.Argument(0).String()))
+		return
+	})
 }
 
 func (self *Client) Run() {
@@ -52,6 +89,7 @@ func (self *Client) Run() {
 		log.Panicln(err)
 	}
 	self.gui.ShowCursor = true
+	self.bindOtto()
 	err := self.gui.MainLoop()
 	if err != nil && err != gocui.ErrorQuit {
 		log.Panicln(err)
@@ -61,6 +99,7 @@ func (self *Client) Run() {
 func New() (result *Client) {
 	result = &Client{
 		gui: gocui.NewGui(),
+		ot:  otto.New(),
 	}
 	return
 }
