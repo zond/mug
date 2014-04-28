@@ -18,11 +18,12 @@ const (
 )
 
 type Client struct {
-	ctrlcAt    time.Time
-	gui        *gocui.Gui
-	connection unsafe.Pointer
-	ot         *otto.Otto
-	history    []string
+	ctrlcAt     time.Time
+	gui         *gocui.Gui
+	connection  unsafe.Pointer
+	ot          *otto.Otto
+	history     []string
+	historyBack int
 }
 
 func (self *Client) Close() {
@@ -34,28 +35,28 @@ func (self *Client) getConn() *net.TCPConn {
 }
 
 func (self *Client) handleLine(g *gocui.Gui, v *gocui.View) (err error) {
-	line, err := v.Line(0)
-	if err != nil {
-		return
-	}
+	line, _ := v.Line(0)
 	v.Clear()
 	v.SetCursor(0, 0)
-	if len(line) > 0 {
-		line = strings.TrimSpace(line)
-		line = line[:len(line)-1]
-		if line[0] == '/' {
-			result, e := self.ot.Run(line[1:])
-			if e != nil {
-				self.Outputf("Error executing %#v: %v\n", line[1:], e)
+	if line != "" {
+		if len(line) > 0 {
+			line = strings.TrimSpace(line)
+			self.history = append(self.history, line)
+			line = line[:len(line)-1]
+			if line[0] == '/' {
+				result, e := self.ot.Run(line[1:])
+				if e != nil {
+					self.Outputf("Error executing %#v: %v\n", line[1:], e)
+					return
+				}
+				self.Outputf("%v\n", result)
 				return
-			}
-			self.Outputf("%v\n", result)
-			return
-		} else {
-			if self.getConn() != nil {
-				fmt.Fprintln(self.getConn(), line)
 			} else {
-				self.Outputf("Nowhere to send %#v\n", line)
+				if self.getConn() != nil {
+					fmt.Fprintln(self.getConn(), line)
+				} else {
+					self.Outputf("Nowhere to send %#v\n", line)
+				}
 			}
 		}
 	}
@@ -115,6 +116,9 @@ func (self *Client) Run() {
 	if err := self.gui.SetKeybinding("", gocui.KeyCtrlC, 0, self.ctrlc); err != nil {
 		log.Panicln(err)
 	}
+	if err := self.gui.SetKeybinding("", gocui.KeyArrowDown, 0, self.arrowDown); err != nil {
+		log.Panicln(err)
+	}
 	if err := self.gui.SetKeybinding("", gocui.KeyArrowUp, 0, self.arrowUp); err != nil {
 		log.Panicln(err)
 	}
@@ -159,8 +163,41 @@ func (self *Client) Outputf(format string, params ...interface{}) {
 	}
 }
 
-func (self *Client) arrowUp(g *gocui.Gui, v *gocui.View) error {
-	self.Outputf("Arrowup!")
+func (self *Client) arrowDown(g *gocui.Gui, v *gocui.View) (err error) {
+	if len(self.history) > 0 && self.historyBack > 0 {
+		currLine, _ := v.Line(0)
+		self.history[len(self.history)-self.historyBack] = currLine
+		self.historyBack--
+		v.Clear()
+		if self.historyBack > 0 {
+			histLine := self.history[len(self.history)-self.historyBack]
+			fmt.Fprintf(v, "%v", histLine)
+			v.SetCursor(len(histLine)-1, 0)
+		} else {
+			v.SetCursor(0, 0)
+		}
+		self.gui.Flush()
+	}
+	return nil
+}
+
+func (self *Client) arrowUp(g *gocui.Gui, v *gocui.View) (err error) {
+	if len(self.history) > 0 && self.historyBack < len(self.history) {
+		currLine, _ := v.Line(0)
+		if self.historyBack == 0 {
+			if currLine != "" {
+				self.history = append(self.history, currLine)
+			}
+		} else {
+			self.history[len(self.history)-self.historyBack] = currLine
+		}
+		self.historyBack++
+		v.Clear()
+		histLine := self.history[len(self.history)-self.historyBack]
+		fmt.Fprintf(v, "%v", histLine)
+		v.SetCursor(len(histLine)-1, 0)
+		self.gui.Flush()
+	}
 	return nil
 }
 
